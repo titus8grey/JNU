@@ -1,25 +1,29 @@
-﻿package com.example.dell.intelligenttelephone_volumetest1;
+package com.example.dell.intelligenttelephone_volumetest1;
 
 import android.Manifest;
+import android.app.Service;
+import android.content.BroadcastReceiver;
 import android.content.Context;
+import android.content.Intent;
+import android.content.IntentFilter;
 import android.content.pm.PackageManager;
 import android.media.AudioManager;
 import android.media.MediaPlayer;
 import android.media.MediaRecorder;
 import android.os.Environment;
+import android.support.annotation.IntegerRes;
 import android.support.v4.app.ActivityCompat;
 import android.support.v4.content.ContextCompat;
 import android.support.v7.app.ActionBar;
 import android.support.v7.app.AppCompatActivity;
 import android.os.Bundle;
+import android.telephony.PhoneStateListener;
+import android.telephony.TelephonyManager;
+import android.util.Log;
 import android.view.View;
 import android.widget.ImageView;
 import android.widget.TextView;
 import android.widget.Toast;
-import java.io.IOException;
-
-import static java.lang.StrictMath.addExact;
-import static java.lang.StrictMath.max;
 import static java.lang.Thread.sleep;
 
 public class MainActivity extends AppCompatActivity {
@@ -28,19 +32,26 @@ public class MainActivity extends AppCompatActivity {
     private TextView showBell,showCall;
     private MediaRecorder recordNoise;
     private MediaPlayer playBell,playCall;
-    private String[] permissions=new String[]{Manifest.permission.RECORD_AUDIO,Manifest.permission.WRITE_EXTERNAL_STORAGE};
+    private String[] permissions=new String[]{Manifest.permission.RECORD_AUDIO,Manifest.permission.WRITE_EXTERNAL_STORAGE,Manifest.permission.READ_PHONE_STATE};
     private String fileName=Environment.getExternalStorageDirectory().getAbsolutePath() + "/noise.amr";
     private int amplitude,bellVolume,callVolume;
     private double noiseVolume;
-    public double fBellVolume,fCallVolume;
+    public int fBellVolume,fCallVolume;
     private boolean isPlayingBell=false,isPlayingCall=false;
     private AudioManager audioManager;
+
+    public double firstNoiseVolume;
+    public  int firstBellVolume, firstCallVolume;
+    public static final String PHONE_STATE = TelephonyManager.ACTION_PHONE_STATE_CHANGED;
+    MyReceiver myReceiver;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
 
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_main);
+        //注册广播
+        registerBroadcast();
         //隐藏标题栏
         ActionBar actionbar = getSupportActionBar();
         if (actionbar != null) {
@@ -66,19 +77,13 @@ public class MainActivity extends AppCompatActivity {
             ActivityCompat.requestPermissions(MainActivity.this, permissions, 0);
     }
 
-    @Override
-    public void onRequestPermissionsResult(int requestCode,String permissions[],int[] grantResults){
-        switch (requestCode){
-            case 0:{
-                for (int i=0;i<grantResults.length;i++) {
-                    if (grantResults[i] == PackageManager.PERMISSION_GRANTED)
-                        Toast.makeText(this, permissions[i] + "授权成功！", Toast.LENGTH_SHORT).show();
-                    else {
-                        Toast.makeText(this, permissions[i]+"授权失败.", Toast.LENGTH_SHORT).show();
-                    }
-                }
-            }
-        }
+    //注册广播
+    private void registerBroadcast(){
+        myReceiver = new MyReceiver();
+        IntentFilter intentFilter = new IntentFilter();
+        intentFilter.addAction(PHONE_STATE);
+        intentFilter.setPriority(Integer.MAX_VALUE);
+        registerReceiver(myReceiver,intentFilter);
     }
 
     protected class Click implements View.OnClickListener{
@@ -104,6 +109,11 @@ public class MainActivity extends AppCompatActivity {
 
                 //获取用户设置的来电铃声大小（由于这里是通过播放媒体音乐来模拟来电响铃，所以应该获取的是STREAM_MUSIC而不是实际的STREAM_RING）
                 bellVolume=audioManager.getStreamVolume(AudioManager.STREAM_MUSIC);
+
+                //记录初始设置
+                firstNoiseVolume = noiseVolume;
+                firstBellVolume =  bellVolume;
+                firstCallVolume = callVolume;
 
                 showBell.setText(String.format("当前环境噪声值（振幅）：%d\n当前环境音量值（分贝）：%.2f\n您设置的来电铃声音量值：%d\n",amplitude,noiseVolume,bellVolume));
             }
@@ -184,5 +194,54 @@ public class MainActivity extends AppCompatActivity {
         recordNoise.release();
 
     }
+
+    /*
+     *处理广播
+     */
+
+    public class MyReceiver extends BroadcastReceiver {
+        @Override
+        public void onReceive(Context context, Intent intent) {
+            String action = intent.getAction();
+            if(action.equals(MainActivity.PHONE_STATE)){
+                doReceivePhone(context, intent);
+            }
+        }
+
+        public void doReceivePhone(Context context, Intent intent) {
+            TelephonyManager telephonyManager = (TelephonyManager) context.getSystemService(Context.TELEPHONY_SERVICE);
+            int state = telephonyManager.getCallState();
+            switch (state){
+                //铃声响时
+                case TelephonyManager.CALL_STATE_RINGING:
+                    audioManager.setStreamVolume(AudioManager.STREAM_VOICE_CALL,0,0); //防止计算过程中铃声太大
+                    Toast.makeText(context, "电话来啦\n电话来啦\n电话来啦\n电话来啦", Toast.LENGTH_SHORT).show();
+                    getNoise(); //获取环境噪声
+                    fBellVolume = (int)(noiseVolume-firstNoiseVolume)/2 + firstBellVolume;  //计算铃声大小
+                    if (firstBellVolume < 3)
+                        firstBellVolume = 3;
+                    else if (firstBellVolume > 15)
+                        firstBellVolume = 15;
+                    audioManager.setStreamVolume(AudioManager.STREAM_RING,fBellVolume,0);   //设置铃声大小
+                    break;
+
+                 //通话进行时
+                 case TelephonyManager.CALL_STATE_OFFHOOK:
+                    Toast.makeText(context, "通话进行中\n通话进行中\n通话进行中\n通话进行中", Toast.LENGTH_SHORT).show();
+                     getNoise(); //获取环境噪声
+                     fCallVolume = (int)(noiseVolume-firstNoiseVolume)/2 + firstCallVolume;  //计算通话音量
+                     if (firstCallVolume < 3)
+                         firstBellVolume = 3;
+                     else if (firstCallVolume > 15)
+                         firstBellVolume = 15;
+                     audioManager.setStreamVolume(AudioManager.STREAM_VOICE_CALL,fBellVolume,0);   //设置通话音量
+                    break;
+                default:
+                    break;
+            }
+        }
+    }
+
+
 
 }
